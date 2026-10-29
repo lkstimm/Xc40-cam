@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F2233">
+<title>XC40 Kamera</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0F2233;        /* night-road blue */
+    --panel: #162D42;
+    --line: #24435E;
+    --text: #E8EEF4;
+    --muted: #8FA3B6;
+    --tally: #F2B53A;      /* camera tally light */
+    --ok: #5BD49B;
+    --bad: #FF7A6B;
+    --r: 20px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--text);
+    font-family: "Archivo", system-ui, sans-serif; font-variation-settings: "wdth" 100; -webkit-font-smoothing: antialiased; }
+  body { display: flex; flex-direction: column; min-height: 100dvh; padding: max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); gap: 14px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .state { font-size: clamp(28px, 9vw, 40px); font-weight: 800; font-variation-settings: "wdth" 125; letter-spacing: -0.01em; line-height: 1; }
+  .state[data-s="live"] { color: var(--tally); }
+  .state[data-s="error"] { color: var(--bad); }
+  .room { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .finder { position: relative; flex: 1; min-height: 46vh; border-radius: var(--r); overflow: hidden; background: #08131D;
+    outline: 3px solid var(--line); outline-offset: 0; transition: outline-color .25s; }
+  .finder[data-live="1"] { outline-color: var(--tally); animation: tally 1.6s ease-in-out infinite; }
+  @keyframes tally { 50% { outline-color: rgba(242,181,58,.45); } }
+  @media (prefers-reduced-motion: reduce) { .finder[data-live="1"] { animation: none; } }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .hint { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); font-size: 16px; line-height: 1.45; }
+  .hint b { color: var(--text); font-weight: 600; }
+  .car { position: absolute; left: 12px; bottom: 12px; padding: 6px 12px; border-radius: 999px; background: rgba(15,34,51,.82);
+    font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); }
+
+  .controls { display: grid; gap: 12px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--panel); border-radius: 14px; padding: 4px; gap: 4px; }
+  .seg button { font: inherit; font-size: 15px; color: var(--muted); background: none; border: 0; border-radius: 10px; padding: 10px 4px; }
+  .seg button[aria-pressed="true"] { background: var(--line); color: var(--text); font-weight: 600; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+  .go { font: inherit; font-size: 19px; font-weight: 700; padding: 17px; border: 0; border-radius: 16px; background: var(--tally); color: #1A1200; }
+  .go[data-live="1"] { background: var(--panel); color: var(--text); box-shadow: inset 0 0 0 2px var(--tally); }
+  .flip { font: inherit; font-size: 15px; padding: 0 18px; border: 0; border-radius: 16px; background: var(--panel); color: var(--text); }
+  button:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+  details.car-data { background: var(--panel); border-radius: 14px; padding: 12px 14px; }
+  details.car-data summary { font-weight: 600; font-size: 15px; cursor: pointer; }
+  .kv { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 12px; margin-top: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .kv span:nth-child(odd) { color: var(--muted); overflow-wrap: anywhere; }
+  .kv span:nth-child(even) { text-align: right; }
+  .stats { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.2em; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="state" id="state" data-s="idle">Bereit</div>
+    <div class="room" id="room"></div>
+  </header>
+
+  <div class="finder" id="finder">
+    <video id="video" playsinline muted></video>
+    <div class="hint" id="hint"></div>
+    <div class="car" id="carPill" hidden><span class="dot" id="carDot"></span><span id="carText">Auto nicht verbunden</span></div>
+  </div>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Bildqualität">
+      <button data-q="320,240,0.6,8">Schnell</button>
+      <button data-q="480,360,0.65,6" aria-pressed="true">Ausgewogen</button>
+      <button data-q="640,480,0.7,4">Detail</button>
+    </div>
+    <div class="row">
+      <button class="go" id="go">Stream starten</button>
+      <button class="flip" id="flip" aria-label="Kamera wechseln">Kamera wechseln</button>
+    </div>
+    <div class="stats" id="stats"></div>
+    <details class="car-data" id="carData" hidden>
+      <summary id="carSummary">Fahrzeugdaten</summary>
+      <div class="kv" id="kv"></div>
+    </details>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+(() => {
+  const BROKER = new URLSearchParams(location.search).get("broker") || "wss://broker.hivemq.com:8884/mqtt";
+  const $ = id => document.getElementById(id);
+  const frag = new URLSearchParams(location.hash.slice(1));
+  const room = (frag.get("r") || "").toUpperCase();
+  const keyB64 = frag.get("k") || "";
+  const TOPIC = `alphavant-xc40/${room}`;
+
+  let quality = [480, 360, 0.65, 6];
+  let facing = "environment", stream = null, client = null, key = null;
+  let live = false, timer = null, busy = false, sent = 0, bytes = 0, lastStat = performance.now(), lastCar = 0;
+  const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
+
+  function setState(text, s) { $("state").textContent = text; $("state").dataset.s = s; }
+  function hint(html) { $("hint").innerHTML = html; $("hint").hidden = !html; }
+
+  if (!room || !keyB64) {
+    setState("Kein Auto", "error");
+    hint("Diese Seite öffnest du über den <b>QR-Code in der Hello-XC40-App</b> im Auto. Er enthält den Verbindungscode.");
+    $("go").disabled = true; $("flip").disabled = true;
+    return;
+  }
+  $("room").textContent = "Auto " + room;
+  hint("Tippe auf <b>Stream starten</b>. Dein Browser fragt einmal nach der Kamera.");
+  $("carPill").hidden = false;
+
+  const b64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+  crypto.subtle.importKey("raw", b64u(keyB64), "AES-GCM", false, ["encrypt", "decrypt"]).then(k => key = k)
+    .catch(() => { setState("Code ungültig", "error"); hint("Der QR-Code ist beschädigt. Scanne ihn im Auto erneut."); });
+
+  async function seal(buf) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, buf));
+    const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12); return out;
+  }
+  async function open(buf) {
+    const u = new Uint8Array(buf);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(0, 12) }, key, u.slice(12)));
+  }
+
+  function connect() {
+    client = mqtt.connect(BROKER, { clientId: "xc40-phone-" + Math.random().toString(16).slice(2, 10), clean: true, reconnectPeriod: 2000, keepalive: 30 });
+    client.on("connect", () => { client.subscribe(TOPIC + "/car"); if (live) setState("Live", "live"); });
+    client.on("reconnect", () => live && setState("Verbinde…", "idle"));
+    client.on("error", () => setState("Netzwerkfehler", "error"));
+    client.on("message", async (t, payload) => {
+      if (!t.endsWith("/car") || !key) return;
+      try {
+        const msg = JSON.parse(new TextDecoder().decode(await open(payload)));
+        lastCar = Date.now();
+        renderCar(msg);
+      } catch (e) {}
+    });
+  }
+  function renderCar(m) {
+    const props = m.props || {};
+    const keys = Object.keys(props);
+    $("carData").hidden = false;
+    $("carSummary").textContent = `Fahrzeugdaten · ${keys.length} von ${m.readable ?? "?"} Werten` +
+      (m.depthFps ? ` · Tiefe ${Number(m.depthFps).toFixed(1)} fps` : "");
+    const kv = $("kv"); kv.textContent = "";
+    const add = (k, v) => { const a = document.createElement("span"), b = document.createElement("span"); a.textContent = k; b.textContent = v; kv.append(a, b); };
+    if (m.model) add("Gerät", `${m.model} · Android ${m.android}`);
+    if (m.depthMs) add("Tiefenmodell", `${m.depthMs} ms pro Bild`);
+    keys.forEach(k => add(k, props[k]));
+    if (!keys.length) add("Status", m.error || "Das Auto gibt noch keine Werte frei.");
+  }
+
+  setInterval(() => {
+    const on = Date.now() - lastCar < 8000;
+    $("carDot").classList.toggle("on", on);
+    $("carText").textContent = on ? "Auto empfängt" : "Auto nicht verbunden";
+  }, 1000);
+
+  async function camera() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: facing, width: { ideal: quality[0] * 2 }, height: { ideal: quality[1] * 2 } } });
+    $("video").srcObject = stream; await $("video").play();
+  }
+
+  function tick() {
+    clearTimeout(timer);
+    if (!live) return;
+    timer = setTimeout(tick, 1000 / quality[3]);
+    const v = $("video");
+    if (busy || !key || !client || !client.connected || !v.videoWidth) return;
+    const [w, h, q] = quality, vw = v.videoWidth, vh = v.videoHeight, r = w / h;
+    let sw = vw, sh = vw / r; if (sh > vh) { sh = vh; sw = vh * r; }
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, w, h);
+    busy = true;
+    canvas.toBlob(async blob => {
+      try {
+        if (blob) {
+          const sealed = await seal(await blob.arrayBuffer());
+          client.publish(TOPIC + "/f", sealed, { qos: 0 });
+          sent++; bytes += sealed.length;
+        }
+      } finally { busy = false; }
+      const now = performance.now();
+      if (now - lastStat > 1000) {
+        $("stats").textContent = `${(sent * 1000 / (now - lastStat)).toFixed(1)} Bilder/s · ${Math.round(bytes / Math.max(sent, 1) / 1024)} KB pro Bild · verschlüsselt`;
+        sent = 0; bytes = 0; lastStat = now;
+      }
+    }, "image/jpeg", q);
+  }
+
+  $("go").onclick = async () => {
+    if (live) {
+      live = false; clearTimeout(timer);
+      stream && stream.getTracks().forEach(t => t.stop());
+      $("go").textContent = "Stream starten"; $("go").dataset.live = "0"; $("finder").dataset.live = "0";
+      setState("Gestoppt", "idle"); $("stats").textContent = "";
+      hint("Tippe auf <b>Stream starten</b>, um weiterzumachen.");
+      return;
+    }
+    try { await camera(); } catch (e) {
+      setState("Keine Kamera", "error");
+      hint("Kamerazugriff wurde nicht erlaubt. Erlaube die Kamera in den Browser-Einstellungen und lade die Seite neu.");
+      return;
+    }
+    hint("");
+    if (!client) connect();
+    live = true; $("go").textContent = "Stream stoppen"; $("go").dataset.live = "1"; $("finder").dataset.live = "1";
+    setState(client.connected ? "Live" : "Verbinde…", client.connected ? "live" : "idle");
+    tick();
+  };
+  $("flip").onclick = async () => { facing = facing === "environment" ? "user" : "environment"; if (live) { try { await camera(); } catch (e) {} } };
+  document.querySelectorAll(".seg button").forEach(b => b.onclick = async () => {
+    document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    quality = b.dataset.q.split(",").map(Number);
+    if (live) { try { await camera(); } catch (e) {} }
+  });
+  // keep the screen awake while streaming, where supported
+  let lock = null;
+  document.addEventListener("visibilitychange", async () => { if (live && document.visibilityState === "visible" && navigator.wakeLock) { try { lock = await navigator.wakeLock.request("screen"); } catch (e) {} } });
+  $("go").addEventListener("click", async () => { if (navigator.wakeLock) { try { lock = await navigator.wakeLock.request("screen"); } catch (e) {} } });
+})();
+</script>
+</body>
+</html>
