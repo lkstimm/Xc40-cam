@@ -172,6 +172,14 @@
     if (e.alpha == null) return;
     ori = { a: e.alpha, b: e.beta, g: e.gamma };
   });
+  // GPS speed (m/s) as fallback when the car does not share its own speed
+  let gps = null, geoId = null;
+  function startGps() {
+    if (!navigator.geolocation || geoId !== null) return;
+    geoId = navigator.geolocation.watchPosition(p => {
+      gps = { v: p.coords.speed, t: Date.now() };
+    }, () => {}, { enableHighAccuracy: true, maximumAge: 1000 });
+  }
   function screenAngle() {
     if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
     return typeof window.orientation === "number" ? window.orientation : 0;
@@ -211,6 +219,7 @@
     ctx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, w, h);
     const meta = { t: Date.now(), s: screenAngle(), cam: facing === "environment" ? "back" : "front" };
     if (ori) { meta.a = +ori.a.toFixed(2); meta.b = +ori.b.toFixed(2); meta.g = +ori.g.toFixed(2); }
+    if (gps && gps.v != null && Date.now() - gps.t < 4000) meta.v = +gps.v.toFixed(2);
     busy = true;
     canvas.toBlob(async blob => {
       try {
@@ -238,6 +247,7 @@
       return;
     }
     await askMotion();
+    startGps();
     try { await camera(); } catch (e) {
       setState("Keine Kamera", "error");
       hint("Kamerazugriff wurde nicht erlaubt. Erlaube die Kamera in den Browser-Einstellungen und lade die Seite neu.");
