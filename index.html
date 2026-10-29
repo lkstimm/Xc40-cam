@@ -166,6 +166,32 @@
     $("carText").textContent = on ? "Auto empfängt" : "Auto nicht verbunden";
   }, 1000);
 
+  // phone orientation (gyro-fused), sent with every frame so the car can build a map
+  let ori = null;
+  window.addEventListener("deviceorientation", e => {
+    if (e.alpha == null) return;
+    ori = { a: e.alpha, b: e.beta, g: e.gamma };
+  });
+  function screenAngle() {
+    if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
+    return typeof window.orientation === "number" ? window.orientation : 0;
+  }
+  async function askMotion() {
+    try {
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+        await DeviceOrientationEvent.requestPermission();
+      }
+    } catch (e) {}
+  }
+  // frame = JPEG + meta JSON + uint16 meta length + "XCF1" (trailer: old car apps just see a JPEG)
+  function frame(jpeg, meta) {
+    const m = new TextEncoder().encode(JSON.stringify(meta));
+    const j = jpeg.byteLength, out = new Uint8Array(j + m.length + 6);
+    out.set(new Uint8Array(jpeg), 0); out.set(m, j);
+    out.set([m.length >> 8, m.length & 255, 88, 67, 70, 49], j + m.length);
+    return out.buffer;
+  }
+
   async function camera() {
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({ audio: false,
@@ -183,11 +209,13 @@
     let sw = vw, sh = vw / r; if (sh > vh) { sh = vh; sw = vh * r; }
     canvas.width = w; canvas.height = h;
     ctx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, w, h);
+    const meta = { t: Date.now(), s: screenAngle(), cam: facing === "environment" ? "back" : "front" };
+    if (ori) { meta.a = +ori.a.toFixed(2); meta.b = +ori.b.toFixed(2); meta.g = +ori.g.toFixed(2); }
     busy = true;
     canvas.toBlob(async blob => {
       try {
         if (blob) {
-          const sealed = await seal(await blob.arrayBuffer());
+          const sealed = await seal(frame(await blob.arrayBuffer(), meta));
           client.publish(TOPIC + "/f", sealed, { qos: 0 });
           sent++; bytes += sealed.length;
         }
@@ -209,6 +237,7 @@
       hint("Tippe auf <b>Stream starten</b>, um weiterzumachen.");
       return;
     }
+    await askMotion();
     try { await camera(); } catch (e) {
       setState("Keine Kamera", "error");
       hint("Kamerazugriff wurde nicht erlaubt. Erlaube die Kamera in den Browser-Einstellungen und lade die Seite neu.");
