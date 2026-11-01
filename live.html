@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171916">
+<title>The Tech Storyteller · XC40 Live</title>
+<link rel="stylesheet" href="ts.css">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<style>
+  body { gap: 10px; }
+  .stage { flex: 1; display: grid; gap: 10px; min-height: 0; grid-template-rows: 1fr 1fr; }
+  .stage[data-v="map"] { grid-template-rows: 1fr 0fr; }
+  .stage[data-v="cloud"] { grid-template-rows: 0fr 1fr; }
+  .stage[data-v="map"] #bevBox, .stage[data-v="cloud"] #mapBox { display: none; }
+  .box { position: relative; border-radius: var(--r); overflow: hidden; background: var(--panel); min-height: 0; }
+  #map { position: absolute; inset: 0; background: var(--ink); }
+  .leaflet-tile-pane { filter: sepia(.18) saturate(.7) brightness(1.15) contrast(.95); }
+  .leaflet-container { font-family: var(--mono); }
+  .leaflet-control-attribution { background: rgba(23,25,22,.75) !important; color: var(--grey) !important; font-size: 9px; }
+  .leaflet-control-attribution a { color: var(--grey) !important; }
+  .leaflet-control-zoom a { background: var(--panel) !important; color: var(--cream) !important; border-color: var(--wall) !important; }
+  .ego { width: 26px; height: 26px; }
+  .ego svg { width: 100%; height: 100%; overflow: visible; }
+  canvas#bev { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .tag { position: absolute; left: 10px; top: 10px; z-index: 500; font-family: var(--mono); font-size: 10px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--grey); background: rgba(23,25,22,.8); padding: 5px 8px; border-radius: 6px; }
+  .tag b { color: var(--lime); font-weight: 700; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--grey);
+    font-size: 15px; line-height: 1.45; z-index: 600; background: rgba(23,25,22,.85); }
+  .empty[hidden] { display: none; }
+  .empty b { color: var(--cream); }
+</style>
+</head>
+<body>
+  <div class="brand">
+    <img src="assets/ts_logo_cream.png" alt="The Tech Storyteller">
+    <div class="kicker"><b>XC40</b><br>Drive · Live</div>
+    <div class="spacer"></div>
+    <span class="pill" id="carPill"><span class="dot" id="carDot"></span><span id="carText">Warte auf Auto</span></span>
+  </div>
+
+  <div class="stage" id="stage" data-v="both">
+    <div class="box" id="mapBox">
+      <div id="map"></div>
+      <div class="tag">Karte · <b>gefahrene Strecke</b></div>
+    </div>
+    <div class="box" id="bevBox">
+      <canvas id="bev"></canvas>
+      <div class="tag" id="bevTag">Punktwolke · Vogelperspektive</div>
+    </div>
+    <div class="empty" id="empty" hidden></div>
+  </div>
+
+  <div class="stats" id="stats">
+    <span><b id="sKm">0.0</b>km</span>
+    <span><b id="sTime">0:00</b>Fahrzeit</span>
+    <span><b id="sFps">–</b>SLAM fps</span>
+    <span><b id="sPts">–</b>Punkte</span>
+  </div>
+  <div class="seg" role="group" aria-label="Ansicht">
+    <button data-v="map">Karte</button>
+    <button data-v="both" aria-pressed="true">Beides</button>
+    <button data-v="cloud">Punktwolke</button>
+  </div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js" onerror="window.mqtt=null"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const qs = new URLSearchParams(location.search);
+  const BROKER = qs.get("broker") || "wss://broker.hivemq.com:8884/mqtt";
+  const DEMO = qs.has("demo");
+  const frag = new URLSearchParams(location.hash.slice(1));
+  const room = (frag.get("r") || "").toUpperCase(), keyB64 = frag.get("k") || "";
+  const TOPIC = `alphavant-xc40/${room}`;
+  const CSS = getComputedStyle(document.documentElement);
+  const C = k => CSS.getPropertyValue(k).trim();
+  const LIME = C("--lime"), CREAM = C("--cream"), GREY = C("--grey"), WALL = C("--wall"), INK = C("--ink"), ORG = C("--org");
+
+  // ---------- views ----------
+  document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
+    document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    $("stage").dataset.v = b.dataset.v;
+    setTimeout(() => { map.invalidateSize(); sizeBev(); }, 30);
+  });
+
+  // ---------- map ----------
+  const map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.5511, 9.9937], 15);
+  L.control.zoom({ position: "topright" }).addTo(map);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    { maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap contributors © CARTO" }).addTo(map);
+  const glow = L.polyline([], { color: LIME, weight: 12, opacity: .22, lineCap: "round", lineJoin: "round" }).addTo(map);
+  const line = L.polyline([], { color: LIME, weight: 4, opacity: 1, lineCap: "round", lineJoin: "round" }).addTo(map);
+  const egoIcon = L.divIcon({ className: "ego", iconSize: [26, 26], iconAnchor: [13, 13],
+    html: `<svg viewBox="-13 -13 26 26"><path id="egoPath" d="M0,-12 L8.6,9 L0,4.6 L-8.6,9 Z" fill="${LIME}" stroke="${INK}" stroke-width="2.5" stroke-linejoin="round"/></svg>` });
+  const ego = L.marker([53.5511, 9.9937], { icon: egoIcon, interactive: false });
+  let follow = true;
+  map.on("dragstart", () => follow = false);
+  map.on("dblclick", () => follow = true);
+  const track = [];
+
+  function onPose(m) {
+    if (Array.isArray(m.trk) && m.trk.length > track.length) { track.length = 0; m.trk.forEach(p => track.push(p)); }
+    if (m.lat != null) {
+      const p = [m.lat, m.lon], last = track[track.length - 1];
+      if (!last || Math.abs(last[0] - p[0]) + Math.abs(last[1] - p[1]) > 1.5e-5) track.push(p);
+      if (!map.hasLayer(ego)) ego.addTo(map);
+      ego.setLatLng(p);
+      const el = ego.getElement(); if (el) el.querySelector("svg").style.transform = `rotate(${m.hdg || 0}deg)`;
+      if (follow) map.panTo(p, { animate: true, duration: .5 });
+    }
+    line.setLatLngs(track); glow.setLatLngs(track);
+    $("sKm").textContent = ((m.km ?? 0)).toFixed(1);
+    if (m.dur != null) { const mm = Math.floor(m.dur / 60); $("sTime").textContent = `${Math.floor(mm / 60)}:${String(mm % 60).padStart(2, "0")}`; }
+    $("sFps").textContent = m.fps != null ? Number(m.fps).toFixed(1) : "–";
+    $("sPts").textContent = m.pts != null ? (m.pts >= 1e6 ? (m.pts / 1e6).toFixed(1) + "M" : m.pts >= 1e3 ? Math.round(m.pts / 1e3) + "k" : m.pts) : "–";
+    $("carDot").className = "dot " + (m.rec ? "rec" : "on");
+    $("carText").textContent = m.rec ? "Aufnahme läuft" : "Auto verbunden";
+  }
+
+  // ---------- bird's-eye point cloud ----------
+  const cv = $("bev"), g = cv.getContext("2d");
+  let pts = new Int16Array(0), hts = new Int8Array(0), lastBev = 0;
+  function sizeBev() {
+    const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
+    cv.width = Math.max(1, r.width * d); cv.height = Math.max(1, r.height * d);
+  }
+  addEventListener("resize", () => { sizeBev(); map.invalidateSize(); });
+  sizeBev();
+
+  function drawBev() {
+    const W = cv.width, H = cv.height, d = devicePixelRatio || 1;
+    g.fillStyle = INK; g.fillRect(0, 0, W, H);
+    const ox = W / 2, oy = H * 0.78, range = 45;          // metres visible ahead
+    const s = (oy - 12 * d) / range;
+    // range rings + labels
+    g.strokeStyle = WALL; g.lineWidth = 1 * d; g.fillStyle = GREY; g.font = `${10 * d}px "JetBrains Mono", monospace`;
+    [10, 20, 30, 40].forEach(r => {
+      g.beginPath(); g.arc(ox, oy, r * s, Math.PI, 2 * Math.PI); g.stroke();
+      g.fillText(`${r} m`, ox + 4 * d, oy - r * s - 4 * d);
+    });
+    g.beginPath(); g.moveTo(ox, oy); g.lineTo(ox, 0); g.stroke();
+    // points: ground dim, obstacles bright; one accent colour (lime) for structure above road
+    const n = hts.length;
+    for (let i = 0; i < n; i++) {
+      const x = pts[2 * i] / 10, z = pts[2 * i + 1] / 10, y = hts[i] / 10;
+      const px = ox + x * s, py = oy - z * s;
+      if (py < 0 || py > H || px < 0 || px > W) continue;
+      if (y < 0.25) { g.fillStyle = "rgba(154,160,147,.35)"; }
+      else if (y < 2.2) { g.fillStyle = `rgba(194,255,69,${Math.min(1, .45 + y * .25)})`; }
+      else { g.fillStyle = "rgba(247,248,244,.75)"; }
+      g.fillRect(px - d, py - d, 2 * d, 2 * d);
+    }
+    // ego XC40 footprint, 4.43 × 1.86 m, origin at camera ~ windscreen
+    g.fillStyle = CREAM; g.globalAlpha = .9;
+    g.fillRect(ox - 0.93 * s, oy - 0.6 * s, 1.86 * s, 4.43 * s);
+    g.globalAlpha = 1; g.fillStyle = INK; g.fillRect(ox - 0.7 * s, oy - 0.2 * s, 1.4 * s, 0.9 * s);
+    const stale = Date.now() - lastBev > 4000;
+    $("bevTag").innerHTML = stale ? "Punktwolke · <b style='color:var(--org)'>keine Daten</b>" : "Punktwolke · <b>live</b>";
+  }
+  (function loop() { drawBev(); requestAnimationFrame(loop); })();
+
+  // ---------- transport: XCB1 = "XCB1" u16 metaLen meta(JSON) then N × (int16 x_dm, int16 z_dm, int8 y_dm) ----------
+  function parseBev(u) {
+    if (u.length < 6 || u[0] !== 88 || u[1] !== 67 || u[2] !== 66 || u[3] !== 49) return null;
+    const ml = (u[4] << 8) | u[5];
+    const meta = JSON.parse(new TextDecoder().decode(u.subarray(6, 6 + ml)));
+    const body = u.subarray(6 + ml), n = Math.floor(body.length / 5);
+    const dv = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    const p = new Int16Array(2 * n), h = new Int8Array(n);
+    for (let i = 0; i < n; i++) { p[2 * i] = dv.getInt16(5 * i, true); p[2 * i + 1] = dv.getInt16(5 * i + 2, true); h[i] = dv.getInt8(5 * i + 4); }
+    return { meta, p, h };
+  }
+  function onBev(u) {
+    const r = parseBev(u); if (!r) return;
+    pts = r.p; hts = r.h; lastBev = Date.now(); onPose(r.meta);
+  }
+
+  setInterval(() => {
+    if (Date.now() - lastBev > 8000 && !DEMO) { $("carDot").className = "dot"; $("carText").textContent = "Warte auf Auto"; }
+  }, 1000);
+
+  if (DEMO) return demo();
+  if (!room || !keyB64) {
+    $("empty").hidden = false;
+    $("empty").innerHTML = "Öffne diese Ansicht über <b>„Beifahrer-Ansicht teilen“</b> auf der Kamera-Seite. Der Link enthält den Schlüssel fürs Auto.";
+    return;
+  }
+  const b64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+  crypto.subtle.importKey("raw", b64u(keyB64), "AES-GCM", false, ["decrypt"]).then(key => {
+    const client = mqtt.connect(BROKER, { clientId: "xc40-live-" + Math.random().toString(16).slice(2, 10), clean: true, reconnectPeriod: 2000, keepalive: 30 });
+    client.on("connect", () => client.subscribe(TOPIC + "/bev"));
+    client.on("message", async (t, payload) => {
+      try {
+        const u = new Uint8Array(payload);
+        const plain = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(0, 12) }, key, u.slice(12)));
+        onBev(plain);
+      } catch (e) {}
+    });
+  }).catch(() => { $("empty").hidden = false; $("empty").innerHTML = "Der Link ist beschädigt. Teile ihn auf der Kamera-Seite neu."; });
+
+  // ---------- demo: synthetic drive through a street canyon (for previews, ?demo) ----------
+  function demo() {
+    let t0 = Date.now(), lat = 53.5503, lon = 9.9790, hdg = 70, km = 0;
+    const route = [70, 70, 72, 95, 120, 120, 118, 90, 60, 60];
+    setInterval(() => {
+      const el = (Date.now() - t0) / 1000;
+      const target = route[Math.floor(el / 6) % route.length];
+      hdg += Math.max(-6, Math.min(6, target - hdg));
+      const v = 11, dt = 0.5, dist = v * dt;
+      lat += dist * Math.cos(hdg * Math.PI / 180) / 111320;
+      lon += dist * Math.sin(hdg * Math.PI / 180) / (111320 * Math.cos(lat * Math.PI / 180));
+      km += dist / 1000;
+      // facades left/right, parked cars, a tree line, road surface
+      const P = [], Hh = [];
+      const add = (x, z, y) => { P.push(Math.round(x * 10), Math.round(z * 10)); Hh.push(Math.round(y * 10)); };
+      const phase = el * v;
+      for (let z = 2; z < 44; z += 0.35) {
+        const wob = Math.sin((z + phase) * 0.15) * 0.6;
+        add(-8.5 + wob, z, 3 + (z * 7 % 9)); add(-8.6 + wob, z, 1.2);
+        add(8.2 - wob, z, 3 + (z * 5 % 11)); add(8.3 - wob, z, 1.5);
+        if (Math.floor((z + phase) / 6) % 2) { add(-4.4, z, 0.9); add(4.3, z, 1.1); }
+        for (let x = -3.5; x <= 3.5; x += 1.4) if (Math.random() < .5) add(x + Math.random() * .3, z, 0);
+      }
+      onBev(pack({ lat, lon, hdg, km, dur: el, fps: 2.8, pts: Math.round(41000 + el * 900), rec: true }, P, Hh));
+    }, 500);
+  }
+  function pack(meta, P, Hh) {
+    const m = new TextEncoder().encode(JSON.stringify(meta)), n = Hh.length;
+    const u = new Uint8Array(6 + m.length + 5 * n); u.set([88, 67, 66, 49, m.length >> 8, m.length & 255]); u.set(m, 6);
+    const dv = new DataView(u.buffer, 6 + m.length);
+    for (let i = 0; i < n; i++) { dv.setInt16(5 * i, P[2 * i], true); dv.setInt16(5 * i + 2, P[2 * i + 1], true); dv.setInt8(5 * i + 4, Hh[i]); }
+    return u;
+  }
+})();
+</script>
+</body>
+</html>
