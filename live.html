@@ -15,7 +15,6 @@
   .stage[data-v="map"] #bevBox, .stage[data-v="cloud"] #mapBox { display: none; }
   .box { position: relative; border-radius: var(--r); overflow: hidden; background: var(--panel); min-height: 0; }
   #map { position: absolute; inset: 0; background: var(--ink); }
-  .leaflet-tile-pane { filter: sepia(.18) saturate(.7) brightness(1.15) contrast(.95); }
   .leaflet-container { font-family: var(--mono); }
   .leaflet-control-attribution { background: rgba(23,25,22,.75) !important; color: var(--grey) !important; font-size: 9px; }
   .leaflet-control-attribution a { color: var(--grey) !important; }
@@ -89,8 +88,28 @@
   // ---------- map ----------
   const map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.5511, 9.9937], 15);
   L.control.zoom({ position: "topright" }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-    { maxZoom: 19, subdomains: "abcd", attribution: "© OpenStreetMap contributors © CARTO" }).addTo(map);
+  // OSM tiles recoloured to the CI palette, same rule as in the car (TileCache.recolor)
+  const CiTiles = L.GridLayer.extend({
+    createTile(c, done) {
+      const cv = document.createElement("canvas"); cv.width = cv.height = 256;
+      const img = new Image(); img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const g = cv.getContext("2d"); g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, 256, 256), p = d.data;
+        for (let i = 0; i < p.length; i += 4) {
+          const r = p[i], gg = p[i + 1], b = p[i + 2], mx = Math.max(r, gg, b);
+          if (b > r + 25 && b > 180) { p[i] = 0x16; p[i + 1] = 0x20; p[i + 2] = 0x1f; continue; }
+          const v = mx < 232 ? 0 : Math.min(1, (mx - 232) / 23);
+          p[i] = 0x17 + v * (0x5a - 0x17); p[i + 1] = 0x19 + v * (0x5f - 0x19); p[i + 2] = 0x16 + v * (0x55 - 0x16);
+        }
+        g.putImageData(d, 0, 0); done(null, cv);
+      };
+      img.onerror = e => done(e, cv);
+      img.src = `https://tile.openstreetmap.org/${c.z}/${c.x}/${c.y}.png`;
+      return cv;
+    }
+  });
+  new CiTiles({ maxZoom: 19, attribution: "© OpenStreetMap contributors" }).addTo(map);
   const glow = L.polyline([], { color: LIME, weight: 12, opacity: .22, lineCap: "round", lineJoin: "round" }).addTo(map);
   const line = L.polyline([], { color: LIME, weight: 4, opacity: 1, lineCap: "round", lineJoin: "round" }).addTo(map);
   const egoIcon = L.divIcon({ className: "ego", iconSize: [26, 26], iconAnchor: [13, 13],
